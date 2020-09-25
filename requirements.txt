@@ -96,7 +96,7 @@ statsmodels==0.8.0
 style==1.1.0
 tables==3.4.2
 tensorboard==2.1.1
-tensorflow==2.1.0
+tensorflow==2.1.2
 tensorflow-estimator==2.1.0
 tensorflow-probability==0.6.0
 termcolor==1.1.0
