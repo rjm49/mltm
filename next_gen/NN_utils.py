@@ -14,10 +14,11 @@ class WeightClip(Constraint):
         return K.clip(p, self.min_w, self.max_w)
 
     def get_config(self):
-        return {'name': self.__class__.__name__,
+        return {
+#                 'name': self.__class__.__name__,
                 'min_w': self.min_w,
                 'max_w': self.max_w }
-    
+      
 from keras import constraints
 from keras import regularizers
 import numbers

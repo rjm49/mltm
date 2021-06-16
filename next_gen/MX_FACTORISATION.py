@@ -9,6 +9,8 @@ from matplotlib import pyplot as plt
 from random import shuffle, choice, randint
 
 import math
+import keras
+import tensorflow
 
 from NN_utils import BigTable, WeightClip
 
@@ -37,138 +39,152 @@ def pr_to_spread(p, comps=1, as_A_and_D=True):
 print("started")
 
 
+from sklearn.svm import SVR
+
+
+def calc_probs_from_embs(students,questions):
+    students2 = numpy.repeat(students, len(questions), axis=0)
+    questions2 = numpy.tile(questions, (len(students),1))
+    zmask = numpy.isclose(questions2,-10).astype(int)
+    diffs = students2-questions2
+    prs = 1.0/(1.0+ numpy.exp(-diffs))
+    prs = numpy.maximum(zmask,prs)
+    probs2 = numpy.prod(prs, axis=1).reshape(len(students), len(questions))
+    return probs2
+
+
 # In[2]:
 
 
-from numpy.random import uniform, random_integers
-from scipy.stats import truncnorm
-
-def gen_bayes_students_questions(n_students, n_questions, a0, a1, n_factors, min_active_traits, max_active_traits):
-    students = numpy.zeros((n_students, n_factors))
-    for six in range(n_students):
-#         true_comps = numpy.random.normal(a0, a1, size=n_factors)#+0.2#+2#+1.2
-#         true_comps = numpy.random.normal(0, 5/3, size=n_factors)#+0.2#+2#+1.2
-        true_comps = numpy.random.uniform(0,1, size=n_factors)#+0.2#+2#+1.2
-        for cix,c in zip(range(n_factors), true_comps):
-            students[six,cix] = c
-
-    questions = numpy.zeros((n_questions, n_factors))
-    for qix in range(n_questions):
-#         n_comps = randint(min_active_traits, max_active_traits)
-        n_comps = n_factors
-        comp_ixs = numpy.random.choice(range(n_factors), size=n_comps, replace=False)
-        true_comps = numpy.random.uniform(a0[0],a0[1], size=n_comps)
-
-        for cix,c in zip(comp_ixs,true_comps):
-            questions[qix,cix] = c#+boost
-    
-    print("genqs",students.shape, questions.shape)
-    return students, questions
-
-def gen_bayes_run(n_traits, a0, a1, min_active_traits, max_active_traits, test_w=None, n_students=8, n_questions=8):
-    students, questions = gen_bayes_students_questions(n_students, n_questions, a0, a1, n_factors, min_active_traits, max_active_traits)
-    print(students.shape, questions.shape)
-    obs = numpy.zeros((len(students), len(questions)))
-    probs = numpy.zeros((len(students), len(questions)))
-    vz = []
-    mz = []
-    scz =[]
-    for vi in range(len(students)):
-        for mi in range(len(questions)):
-            prs = (1-questions[mi]) + (questions[mi]*students[vi])
-            pr = numpy.prod(prs)
-            obs[vi,mi] = (random.random() < pr)
-            probs[vi,mi] = pr
-    return obs, probs, students, questions
-
-# n_students, n_questions, n_factors, min_active, max_active = 100,100,10,10,10
-
-
-# In[3]:
-
-
-from numpy.random import uniform, random_integers
-from scipy.stats import truncnorm
-
-def gen_rasch_students_questions(n_students, n_questions, a0, a1, n_factors, min_active_traits, max_active_traits, test_w):
-    students = numpy.zeros((n_students, n_factors))
-    for six in range(n_students):
-        true_comps = numpy.random.normal(0, a1, size=n_factors)#+0.2#+2#+1.2
-#         true_comps = numpy.random.normal(0, 5/3, size=n_factors)#+0.2#+2#+1.2
-#         true_comps = numpy.random.uniform(0,1, size=n_factors)#+0.2#+2#+1.2
-        for cix,c in zip(range(n_factors), true_comps):
-            students[six,cix] = c
-
-    av_c = (min_active_traits + max_active_traits)/2
-    d50 = pr_to_spread(.5, av_c, as_A_and_D=False)
-    
-    questions = numpy.zeros((n_questions, n_factors)) - 50
-    
-    minb=-(test_w/2) -a0 - d50
-    maxb=(test_w/2) -a0 - d50
-    questions = questions
-    minb, maxb = sorted([minb, maxb])
-    minb = float(minb)
-    maxb = float(maxb)
-    
-    for qix in range(n_questions):
-        n_comps = randint(min_active_traits, max_active_traits)
-#         print("n_comps", n_comps)
-        comp_ixs = numpy.random.choice(range(n_factors), size=n_comps, replace=False)  
-#         print("range=", minb,maxb)
-        true_comps = numpy.random.uniform(minb, maxb, size=n_comps)
-        for cix,c in zip(comp_ixs,true_comps):
-            questions[qix,cix] = c
-            
-    return students, questions
-
-def gen_rasch_run(n_traits, a0, a1, min_active_traits, max_active_traits, test_w=None, n_students=8, n_questions=8):
-    students, questions = gen_rasch_students_questions(n_students, n_questions, a0, a1, n_factors, min_active_traits, max_active_traits, test_w=test_w)
-    obs = numpy.zeros((len(students), len(questions)))
-    probs = numpy.zeros((len(students), len(questions)))
-    vz = []
-    mz = []
-    scz =[]
-    for vi in range(len(students)):
-        for mi in range(len(questions)):
-#             zmask = (questions[mi] < 0.001).astype(int)
-            diffs = students[vi]-questions[mi]
-            prs = logistic(diffs,1,0)
-#             prs = numpy.maximum(zmask,prs)
-
-            pr = numpy.prod(prs)
-            obs[vi,mi] = (random.random() < pr)
-            probs[vi,mi] = pr
-    return obs, probs, students, questions
-
-
 from keras.regularizers import l1
-from keras.layers import Dropout, multiply, subtract, GaussianNoise, GaussianDropout, Input, Lambda
+from keras.layers import Reshape, Dense, Dropout, multiply, subtract, GaussianNoise, GaussianDropout, Input, Lambda, Embedding, concatenate, Flatten
 from keras import backend as K, Model
 def generate_qs_model(qn_table, psi_table, optimiser, _mode="MXFN", loss="MSE"):
+    
     psi_sel = Input(shape=(1,), name="psi_select", dtype="int32")
     qn_sel = Input(shape=(1,), name="q_select", dtype="int32")
-    print(qn_table, psi_table, psi_sel, qn_sel)
-    print("psi_sel shape", psi_sel.shape)
+
+#     print(qn_table, psi_table, psi_sel, qn_sel)
+#     print("psi_sel shape", psi_sel.shape)
 
     psi_table.trainable=True
     qn_table.trainable=True
     
     qn_row = qn_table(qn_sel)
     psi_row = psi_table(psi_sel)
+    
+    row_w = qn_table.kernel.shape[1]
 
     print("Mode is", _mode)
-    if _mode=="COND":
+    if _mode=="DEEP":
+        qn_row = Embedding(qn_table.kernel.shape[0] , row_w, input_length=1)(qn_sel)
+        psi_row = Embedding(psi_table.kernel.shape[0], row_w, input_length=1)(psi_sel)
+
+        qn_table = None
+        psi_table = None
+        
+#         qn_row = Reshape((row_w, ))(qn_row)
+#         psi_row = Reshape((row_w, ))(psi_row)
+        qn_row = Flatten()(qn_row)
+        psi_row = Flatten()(psi_row)
+    
+        loss = "XENT"
+        
+        difs = subtract([psi_row, qn_row], name="difs")
+#         difs = Dropout(0.05)(difs)
+        Prs = Lambda(lambda z: (K.exp(z) / (1.0 + K.exp(z))), name="Pr_sigmoid1")(difs)
+#         Prs = Dropout(0.05)(Prs)
+#         hazardrat = Lambda(lambda ps: K.prod(ps), name="hazard_tse")(Prs)
+#         h = Dropout(0.01)(Prs)
+
+#         h = concatenate([psi_row, qn_row])
+#         h = Dense(2*row_w, activation="relu")(h)
+#         h = Dropout(0.1)(h)
+#         h = Dense(100, activation="relu")(h)
+# #         h = Dense(5, activation="relu")(h)
+#         h = Dropout(0.1)(h)
+#         hazard = Dense(1, activation="sigmoid", name="hazard")(h)
+    
+    
+        h = concatenate([psi_row, qn_row])
+#         h = Dense(128, activation="relu")(h)
+#         h = Dropout(0.01)(h)
+#         h = Dense(64, activation="relu")(h)
+#         h = Dropout(0.01)(h)
+#         h = Dense(10, activation="relu")(h)
+#         h = Dropout(0.01)(h)
+        h = Dense(5, activation="relu")(h)
+#         h = Dropout(0.01)(h)
+        hazard = Dense(1, activation="sigmoid", name="hazard")(h)
+    
+#         psi_row = Dense(32, activation="relu")(psi_row)
+#         psi_row = Dense(32, activation="relu")(psi_row)
+#         psi_row = Dense(32, activation="relu")(psi_row)
+        
+#         qn_row = Dense(32, activation="relu")(qn_row)
+#         qn_row = Dense(32, activation="relu")(qn_row)
+#         qn_row = Dense(32, activation="relu")(qn_row)
+        
+#         psi_row = Dense(32, activation="relu")(psi_row)
+#         qn_row = Dense(32, activation="relu")(qn_row)
+#         h = concatenate([psi_row, qn_row, difs])
+#         psi_row = Dense(13, activation="relu")(psi_row)
+#         qn_row = Dense(13, activation="relu")(qn_row)
+#         h = concatenate([psi_row, qn_row])
+#         h = Dense(64, activation="relu")(difs)
+#         h = Dense(50, activation="relu")(h)
+#         h = concatenate([h, difs])
+
+#         h = Dense(64, activation="relu")(h)
+
+#         h = Dense(100, activation="relu")(h)
+#         hazard = Dense(10, activation="relu")(h)
+
+        hazard = Dense(10, activation="relu")(hazard)
+#         hazard = Dropout(0.1)(hazard)
+        hazard = Dense(10, activation="relu")(hazard)
+#         hazard = Dropout(0.1)(hazard)
+        score = Dense(5, activation="softmax")(hazard)
+
+        
+#         difs = subtract([psi_row, qn_row])
+#         h = Lambda(lambda z: (2*(1.0 / (1.0 + K.exp(-z))))-0.5), name="Pr_sigmoid1")(difs)
+#         h = Dense(64, activation="sigmoid")(h)
+#         h = difs
+#         h = Dense(10, activation="relu")(h)
+#         h = Dense(50, activation="relu")(h)
+#         h = Dense(10, activation="relu")(h)
+#         h = Dense(3, activation="relu")(h)
+#         h = Dense(3, activation="relu")(h)
+#         h = Dense(3, activation="relu")(h)
+#         hazard = Dense(1, activation="sigmoid")(h)
+#         score = Dense(25, activation="softmax")(h)
+        
+#         outz=[]
+#         max_failures = 4
+#         for n in range(max_failures):
+#             print("setting o for ",n)
+#             mid = Lambda(lambda p: (1-p)**n * p)
+#             o = mid(hazard)
+#             outz.append(o)
+# #         fin = Lambda(lambda p: (1-p)**(max_failures))(score)
+#         fin = Lambda(lambda pz: 1.0 - K.sum(pz, axis=-1, keepdims=True))(concatenate(outz))
+#         outz.append(fin)
+#         score = concatenate(outz)
+
+        
+    elif _mode=="COND":
         Prs = Lambda(lambda qs: (1 - qs[0])+(qs[0]*qs[1]), name="Prs")([qn_row, psi_row])
         score = Lambda(lambda ps: K.prod(ps, axis=1, keepdims=True), name="score")(Prs)
-    if _mode=="BINQ":
-        Prs = Lambda(lambda qs: (1 - qs[0])+(qs[0]*qs[1]), name="Prs")([qn_row, psi_row])
-        score = Lambda(lambda ps: K.prod(ps, axis=1, keepdims=True), name="score")(Prs)
+#     elif _mode=="BINQ":
+#         Prs = Lambda(lambda qs: (1 - qs[0])+(qs[0]*qs[1]), name="Prs")([qn_row, psi_row])
+#         score = Lambda(lambda ps: K.prod(ps, axis=1, keepdims=True), name="score")(Prs)
     elif _mode=="MLTM":
-#         klip = Lambda(lambda qk: 10*(K.clip(qk,-5, -4.9)+5))
-#         q_masque = klip(qn_row)
+        klip = Lambda(lambda qk: K.clip(qk,-10, -9)+10)
+        q_masque = klip(qn_row)
         difs = subtract([psi_row, qn_row])
         Prs = Lambda(lambda z: (1.0 / (1.0 + K.exp(-z))), name="Pr_sigmoid1")(difs)
+        Prs = Lambda(lambda ps_q:  ps_q[0]*ps_q[1] + (1-ps_q[1]) ) ([Prs, q_masque])
         score = Lambda(lambda ps: K.prod(ps, axis=1, keepdims=True), name="score")(Prs)
     else:
         if _mode!="MXFN":
@@ -181,137 +197,31 @@ def generate_qs_model(qn_table, psi_table, optimiser, _mode="MXFN", loss="MSE"):
     
     model = Model(inputs=[qn_sel, psi_sel], outputs=score)
 
-    if _mode=="BINQ":
-        from_half = Lambda(lambda x: ((x-1)**2 * (x-0)**2)+1 )
-        s_loss = from_half(psi_row)
-        q_loss = from_half(qn_row)
-        def custom_loss(s_loss,q_loss):
-            def orig_loss(yt,yh):
-                return K.binary_crossentropy(yt,yh) * s_loss * q_loss
-#             return K.mean(K.square(yt-yh)) + 5000*aux_av + 1000*aux_std + aux_loss/10000
-            return orig_loss
-        model.compile(optimizer=optimiser, loss=custom_loss(s_loss, q_loss), metrics=["accuracy"])
-        return model
+#     if _mode=="BINQ":
+#         from_half = Lambda(lambda x: 1+K.sum((0.25-(x-0.5)**2)) )
+#         s_loss = from_half(psi_table.kernel)
+#         q_loss = from_half(qn_table.kernel)
+#         def custom_loss(s_loss,q_loss):
+#             def orig_loss(yt,yh):
+#                 return K.binary_crossentropy(yt,yh) * s_loss * q_loss
+# #             return K.mean(K.square(yt-yh)) + 5000*aux_av + 1000*aux_std + aux_loss/10000
+#             return orig_loss
+#         model.compile(optimizer=optimiser, loss=custom_loss(s_loss, q_loss), metrics=["accuracy"])
+#         return model
     
     print("loss mode is", loss)
     if loss=="MSE":
-        model.compile(optimizer=optimiser, loss="mse", metrics=["accuracy"])
+        model.compile(optimizer='adam', loss='mse', metrics=["mean_absolute_error"])
+    elif loss=="XENT":
+        model.compile(optimizer=optimiser, loss="categorical_crossentropy", metrics=["mean_absolute_error"])     
     else:
-        if loss!="XENT":
-            print("loss mode must be MSE or XENT, not", loss," - setting to XENT.")
-            loss="XENT"            
-        model.compile(optimizer=optimiser, loss="binary_crossentropy", metrics=["accuracy"])     
+        model.compile(optimizer=optimiser, loss="binary_crossentropy", metrics=["mean_absolute_error"])     
     print(model.summary())
 
     return model
 
 
-# In[6]:
-
-
-from keras.regularizers import l1
-from keras.layers import Dropout, multiply, subtract, GaussianNoise, GaussianDropout, Input, Lambda, Dense
-from keras import backend as K, Model
-from keras.optimizers import Adam
-def generate_offset_generator():
-    #width, dispersal, target_EV
-    
-    inp = Input(shape=(3,))
-    h = Dense(5, activation="relu")(inp)
-    h = Dense(5, activation="relu")(h)
-    h = Dense(5, activation="relu")(h)
-#     h = Dense(5, activation="relu")(h)
-    offset = Dense(1, activation="linear")(h)
-    
-    model = Model(inputs=[inp], outputs=offset)
-    model.compile(optimizer=Adam(), loss="mse")
-    print(model.summary())
-    return model
-
-
-# In[7]:
-
-
-# a1 = 5/3
-# a0 = 1.75
-# tw = 3.5
-
-def create_offset_generator(n_factors, min_active, max_active, sampsize=14, n_iter=20000, rasch=True):
-    n_questions = int(sampsize / 0.9)
-    n_students = int(sampsize / 0.9)
-    gen_m = generate_offset_generator()
-    inps = []
-    outs = []
-    
-    for a in range(n_iter):
-
-#         tw = random.uniform(0, 4)
-        tw = random.uniform(0, 5)
-        a0 = random.uniform(-5, 5)
-        a1 = random.uniform(.5, 4)
-#         print(tw,a1,"...",a0)
-        
-        if rasch:
-            _, _, students_temp, qz_temp  = gen_rasch_run(n_factors, a0, a1, min_active, max_active, test_w = tw, n_students=n_students, n_questions=n_questions)
-        else:
-            _, _, students_temp, qz_temp  = gen_bayes_run(n_factors, a0, a1, min_active, max_active, test_w = tw, n_students=n_students, n_questions=n_questions)
-
-        students2 = students_temp
-        questions = qz_temp
-
-#         print("qs set gen'd")
-
-        probs=numpy.zeros((len(students2), len(questions)))
-#         obs=numpy.zeros((len(students2), len(questions)))
-
-        for vi in range(len(students2)):
-            for mi in range(len(questions)):
-                if rasch:
-        #                 zmask = (qws[mi]==-10).astype(int)
-    #                     print(students2[vi])
-    #                     print(questions[mi])
-                    deltas = students2[vi]-questions[mi]
-                    prs = logistic(deltas,1,0)
-    #                     print("prs=", prs)
-    #                     prs = numpy.maximum(zmask,prs)
-                else:
-                    p = students2[vi]
-                    q = questions[mi]
-    #                     print("p",p)
-    #                     print("q",q)
-                    prs = (1-q)+(p*q)
-
-                pr = numpy.prod(prs)
-#                 print("prod pr=", pr)
-    #             sz.append(vi)
-    #             qz.append(mi)
-#                 ob = (random.random() < pr)
-                probs[vi,mi] = pr
-#                 obs[vi,mi] = ob
-
-        exp_ob = numpy.mean(probs)
-        print(exp_ob)
-        inps.append([tw,a1, exp_ob])
-        outs.append(a0)
-        
-    from keras.callbacks import EarlyStopping
-    es = EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True)
-    
-    inps = numpy.array(inps)
-    outs = numpy.array(outs)
-    print(inps.shape, outs.shape)
-    
-    gen_m.fit(inps,outs, epochs=1000, shuffle=True, callbacks=[es], validation_split=0.1)
-        
-    predz = gen_m.predict(inps)
-#     for i,p,o in zip(inps,predz, outs):
-#         print(i, p, o)
-    print("avg", numpy.mean(outs), "vs", numpy.mean(predz))
-    gen_m.evaluate(inps, outs)        
-    return gen_m
-
-
-# In[8]:
+# In[3]:
 
 
 def calc_arr_arr_err(split, real_wgts, pred_wgts, max_iter=10):
@@ -372,7 +282,7 @@ def calc_arr_arr_err(split, real_wgts, pred_wgts, max_iter=10):
     return chosen, min_total_err, total_q_err, total_s_err, mean_ll, best_dis
 
 
-# In[9]:
+# In[4]:
 
 
 import copy
@@ -537,10 +447,11 @@ def plot_items(pred_list, real_items, s_offset):
 # qws2 = qn_table2.get_weights()[0]
 
 
-# In[50]:
+# In[5]:
 
 
-def generate_and_train(qz,sz,pfz, vqz,vsz,vpfz, w, n_factors, min_active, max_active, nn_mode=None, loss_mode=None):
+from sklearn.metrics import r2_score, mean_absolute_error, accuracy_score
+def generate_and_train(n_students, n_questions, qz,sz,pfz, vqz,vsz,vpfz, w, n_factors, min_active, max_active, nn_mode=None, loss_mode=None, class_weights=None):
     btm = 0
     top = math.sqrt(.1/w)
 #     init= (btm,top)
@@ -566,12 +477,15 @@ def generate_and_train(qz,sz,pfz, vqz,vsz,vpfz, w, n_factors, min_active, max_ac
         print(init*init*w)
         s_table =  BigTable((n_students, w), -math.inf, math.inf, init_hilo= init) #, regulariser=regularizers.l2(10e-6))
         qn_table = BigTable((n_questions, w), -math.inf, math.inf, init_hilo= init) #, regulariser=regularizers.l1(10e-6))
-    else:
+    elif nn_mode=="MLTM":
         sp = pr_to_spread(.5, w, as_A_and_D=False)
         print("sp is ",sp)
         s_table =  BigTable((n_students, w), -math.inf, math.inf, init_hilo= 0) #, regulariser=regularizers.l2(10e-6))
-        qn_table = BigTable((n_questions, w), -50, math.inf, init_hilo= -sp) #, regulariser=regularizers.l1(10e-6))        
-        
+        qn_table = BigTable((n_questions, w), -math.inf, math.inf, init_hilo= -sp) #, regulariser=regularizers.l1(10e-6))        
+    else:
+        s_table =  BigTable((n_students, w), -math.inf, math.inf, init_hilo= 0) #, regulariser=regularizers.l2(10e-6))
+        qn_table = BigTable((n_questions, w), -math.inf, math.inf, init_hilo= 0) #, regulariser=regularizers.l1(10e-6))        
+                
     from keras.layers import Embedding
     from keras.constraints import NonNeg, MinMaxNorm
     from keras.initializers import RandomNormal, RandomUniform
@@ -583,14 +497,15 @@ def generate_and_train(qz,sz,pfz, vqz,vsz,vpfz, w, n_factors, min_active, max_ac
 #     s_table = Embedding(n_students,w, input_length=1, embeddings_constraint=WeightClip(0,math.inf), embeddings_initializer=RandomNormal(mean=6, stddev=0.3))
     
     from keras.optimizers import Adam
-    from keras.callbacks import EarlyStopping
+    from keras.callbacks import EarlyStopping, LambdaCallback
     
 #     vqz=[]
     if len(vqz)>0:
-        lozz="val_loss"
+        lozz="val_mean_absolute_error"
         val_dat= [[vqz,vsz], vpfz]
     else:
-        lozz="loss"
+#     if True:
+        lozz="mean_absolute_error"
         val_dat=None
     
     fiftiez = numpy.zeros_like(pfz) + .50
@@ -601,128 +516,238 @@ def generate_and_train(qz,sz,pfz, vqz,vsz,vpfz, w, n_factors, min_active, max_ac
 #         wz = m.get_weights()
         m = generate_qs_model(qn_table, s_table, Adam(), _mode=nn_mode, loss=loss_mode)
 #         m.set_weights(wz)
-        predz = m.predict([vqz,vsz])
+        tr_predz = (m.predict([qz,sz])[:,0] > 0.5)
 #         for vs,vq,tp,pp in zip(vsz,vqz,predz, vpfz):
 #             print(vs,vq,"-",tp,pp)
-        balance = numpy.mean(predz)
-        print("mean pre-train pred/n:", balance)
+        print("PRE-TR AVG  = ", numpy.mean(tr_predz))
+    
+        if len(vqz)>0:
+            v_predz  = (m.predict([vqz,vsz])[:,0] > 0.5)
+            print("PRE-TR VAVG = ", numpy.mean(v_predz))
 
-        es = EarlyStopping(monitor=lozz, restore_best_weights=True, patience=100)
+        es = EarlyStopping(monitor=lozz, restore_best_weights=True, patience=10)
         
-        h = m.fit(x=[qz,sz], y=numpy.array(pfz).reshape(-1,1), batch_size=len(pfz), shuffle=True, epochs=10000, verbose=1, callbacks=[es], validation_data=val_dat)
         
-        if val_dat:
-            print(m.evaluate([vqz,vsz],vpfz))
-#         predz = m.predict([vqz,vsz])
-#         for vs,vq,tp,pp in zip(vsz,vqz,predz, vpfz):
-#             print(vs,vq,"-",tp,pp)
 
+        
+        intermediate_layer_model = Model(inputs=m.input,
+                                outputs=m.get_layer("hazard").output)
+        intermediate_output = intermediate_layer_model.predict([qz,sz])
+        
+        print_weights = LambdaCallback(on_epoch_end=lambda batch, logs: 
+                                       print(numpy.min(intermediate_layer_model.predict([qz,sz])),
+                                             numpy.max(intermediate_layer_model.predict([qz,sz]))))
+
+        
+        _bs = len(pfz)
+#         _bs = 1000
+        for _ in range(1):
+            h = m.fit(x=[qz,sz], y=pfz, batch_size=_bs, class_weight=class_weights, shuffle=True, epochs=10000, verbose=1, callbacks=[es], validation_data=val_dat)
+        tr_predz = m.predict([qz,sz])  
+        if len(vqz)>0:
+            v_predz  = m.predict([vqz,vsz])
+
+#         print("TR AVG = ", numpy.mean(tr_predz))
+#         print("TR R2  = ", r2_score(pfz, tr_predz))
+#         print("TR MAE = ", mean_absolute_error(pfz, tr_predz))
+#         print("TR ACC = ", accuracy_score((pfz>0.5), (tr_predz>0.5)))
+#         print("TR AGT = ", accuracy_score([random.random() < p for p in pfz], [random.random() < p for p in tr_predz]))
+        
+#         if val_dat:
+#             print("VA AVG = ", numpy.mean(v_predz))
+#             print("VA R2  = ", r2_score(vpfz, v_predz))
+#             print("VA MAE = ", mean_absolute_error(vpfz, v_predz))
+#             print("VA ACC = ", accuracy_score((vpfz>0.5), (v_predz>0.5)))
+#             print("VA AGT = ", accuracy_score([random.random() < p for p in vpfz], [random.random() < p for p in v_predz]))
+
+#             for ent,hat in zip(vpfz, v_predz):
+#                 print(ent)
+#                 print(hat)
+#                 print(numpy.sum(hat))
+#                 print("~~~~")
+
+    from sklearn.metrics import classification_report
+    print(classification_report((pfz>0.5), (tr_predz>0.5)))
+    if len(vqz)>0:
+        print(classification_report((vpfz>0.5), (v_predz>0.5)))
+            
 #     h = m.fit(x=[qz,sz], y=pfz.flatten(), batch_size=32, shuffle=True, epochs=1000, verbose=1, callbacks=[es], validation_data=[[vqz,vsz], vpfz])
     return s_table, qn_table, m, h
 
 
-# In[11]:
+# In[6]:
 
 
-gen_m_cache = {}
+def stitch_n_split(_pairs, sts, qns, realise=True, rpt=False):
+    def calc_probs(s,q):
+        zmask = numpy.isclose(q,-10).astype(int)
+        diff = s-q
+        prs = 1.0/(1.0+ numpy.exp(-diff))
+        prs = numpy.maximum(zmask,prs)
+        pr = numpy.prod(prs, axis=1).reshape(len(q))
+        return pr
 
-def calc_skills_coverage():
-    xs=[]
-    ys=[]
-    ycnts=[]
-    n_factors, min_active, max_active = 100,1,5
-    n_students = 1
-    tw=1
-    a0=1
-    a1=1
-    max_n_qns = 150
-    n_questions_list = numpy.linspace(1,max_n_qns,num=10).astype("int")
+    out_w = 5
+    max_fails = out_w -1
+    if realise:
+        if rpt:
+            _counts = defaultdict(int)
+            _matches=[]
+            _pfz=[]
+            _sz, _qz = [],[]
+            cache = defaultdict(list)
+            for (vi,mi) in _pairs:
+                cache[vi].append(mi)
+            
+            for vi in cache:
+                s = sts[vi]
+                prs = calc_probs(s, [qns[k] for k in cache[vi]])  
+#                 print("shape of prs", prs.shape)
+                for mix,mi in enumerate(cache[vi]):
+#                 pr = _probs[vi,mi]
+                    pr = prs[mix]
+                    rnd = random.random()
+                    i=0
+                    while rnd > pr and i<max_fails:
+                        i += 1
+                        rnd = random.random()
 
-    _, _, students_temp, qz_temp  = gen_rasch_run(n_factors, a0, a1, min_active, max_active, test_w = tw, n_students=n_students, n_questions=max_n_qns)
-    for n_questions in n_questions_list:
-        cnt = numpy.array([False]*n_factors).astype("int")
-#         plt.hist(qz_temp.flatten(), alpha=0.5)
-#         plt.show()
-        for q in qz_temp[0:n_questions]:
-            active = (q > -40).astype("int")
-#             print("a",active)
-            cnt = cnt + active
-            seen = numpy.clip(cnt, 0,1)
-        print("c",cnt)
-        print(n_questions, numpy.mean(seen), numpy.mean(cnt))
-        xs.append(n_questions)
-        ys.append(numpy.mean(seen))
-        ycnts.append(numpy.mean(cnt))
-    plt.plot(xs,ys)
-    plt.plot(xs,ycnts)
-    plt.show()
+                    zs = numpy.zeros(max_fails+1)
+                    zs[i] = 1
+                    _counts[i] += 1
+
+                    _pfz.append(zs)
+    #                 _pfz.append(i)
+                    _sz.append(vi)
+                    _qz.append(mi)
+            print("probs calced")
+        else:
+            _prob_list =  numpy.array([calc_prob(sts[vi],qns[mi]) for (vi,mi) in _pairs])
+            _pfz = (numpy.random.random(len(_prob_list)) < _prob_list).astype(int)
+    #     _pfz = (0.5 < _prob_list).astype(int)
+            _matches = ( numpy.round(_prob_list) == _pfz).astype(int)
+        print("realisation complete")
+    else:
+        _prob_list =  numpy.array([calc_prob(sts[vi],qns[mi]) for (vi,mi) in _pairs])
+        _pfz = _prob_list
+        _matches = numpy.ones_like(_prob_list)
+        _sz = [p[0] for p in _pairs]
+        _qz = [p[1] for p in _pairs]
+
+#     print(_pfz)
+#     _pfz = numpy.array([probs[vi,mi] for (vi,mi) in _pairs])
+
+#     print(_matches)
+#     print(numpy.sum(_matches), "correctly labelled out of", len(_matches), "%=", numpy.sum(_matches)/len(_matches))
+    if not rpt:
+        _sz = [p[0] for p in _pairs]
+        _qz = [p[1] for p in _pairs]
+    print("sns complete")
     
-# calc_skills_coverage()
+    one_c = _counts[1]
+    for k in _counts:
+        c = _counts[k]
+        _counts[k] = one_c / c
+    
+    return numpy.array(_pfz), _sz, _qz, _counts
+
+
+# In[7]:
+
+
+gen_m_cache = pickle.load(open("generators.p", "rb"))
+
+
+# In[8]:
+
+
+# gen_m_cache = {}
+
+
+# In[9]:
+
 
 from sklearn.metrics import r2_score, mean_absolute_error
 
-
-def report(n_factors, min_active, max_active, emb_w, nn_mode, loss_mode, sws_list, qws_list, model_list, real_stu_list,
-           real_que_list, test_datasets, params_list):
+def report(n_factors, min_active, max_active, emb_w, nn_mode, loss_mode, sws_list, qws_list, model_list, real_stu_list, real_que_list, test_datasets, params_list, spars_list, compare=False):
+    
     tot_sqerr = 0
     mean_err_list = []
     mean_std_list = []
     mean_hit_list = []
-
+    
     print("*****")
     print(nn_mode, loss_mode)
-    #     print("*****")
-    print(len(sws_list), len(qws_list), len(model_list), len(real_stu_list), len(real_que_list), len(test_datasets),
-          len(params_list))
-
-    for sw, qw, m, stz, qnz, tt_pairs, params in zip(sws_list, qws_list, model_list, real_stu_list, real_que_list,
-                                                     test_datasets, params_list):
-        tw, a1, a0, trbal, vbal = params
-
-        print("params:", n_factors, min_active, max_active, emb_w, "/", tw, a1, a0, trbal, vbal)
-
+#     print("*****")
+    print(len(sws_list), len(qws_list), len(model_list), len(real_stu_list), len(real_que_list), len(test_datasets), len(params_list))
+    
+    for sw,qw,m,stz,qnz,tt_pairs, params, spars in zip(sws_list, qws_list, model_list, real_stu_list, real_que_list, test_datasets, params_list, spars_list):
+        tw,a1,a0,trbal,vbal,agt = params
+        
+        print("params:", n_factors, min_active, max_active, emb_w, "/", tw,a1,a0, "(", trbal,vbal,agt,") [",spars,"]")
+        
         err_list = []
+        true_err_list = []
         hit_list = []
-        #     for six,qix in numpy.sort(tt_pairs, axis=0):
-
+    #     for six,qix in numpy.sort(tt_pairs, axis=0):
+    
         true_pz = []
         pred_pz = []
         for six, qix in tt_pairs:
-            #         print(six, qix)
-            #     print("\n------\n")
-            #     continue
-            #     if False:
-            tq = qnz[qix, :]
-            ts = stz[six, :]
+    #         print(six, qix)
+    #     print("\n------\n")
+    #     continue
+    #     if False:
+            tq = qnz[qix,:]
+            ts = stz[six,:]
             qrow = qw[qix, :]
             srow = sw[six, :]
-            #         print("raw",tq,ts)
-            #         print("dif",ts-tq)
-            #         print(numpy.prod(logistic(ts-tq,1,0)))
-            if rasch:
-                true_p = numpy.prod(logistic(ts - tq, 1, 0))
-            else:
-                true_p = numpy.prod((1 - tq) + (ts * tq))
-            pred_p = m.predict([[qix], [six]])
+#             print(qrow)
+    #         print("raw",tq,ts)
+    #         print("dif",ts-tq)
+    #         print(numpy.prod(logistic(ts-tq,1,0)))
+#             if rasch:
+            true_p = float(calc_probs_from_embs(ts.reshape(1,-1),tq.reshape(1,-1)))
+#                 dif = ts-tq
+#                 true_ps = 1.0 / (1.0 + numpy.exp(-dif))
+#                 true_p = numpy.prod(true_ps)
+#             else:
+#                 true_p = numpy.prod((1-tq)+(ts*tq))
+            pred_p = m.predict([[qix],[six]]).flatten()[0]
+    
+            if compare:
+                print(six,qix, ":", true_p, pred_p)
+    
             true_pz.append(float(true_p))
             pred_pz.append(float(pred_p))
-            #         pred_p = random.random()
-
+    #         pred_p = random.random()
+    
             mae = numpy.abs(true_p - pred_p)
-            print(true_p, float(pred_p), "err:", float(mae))
+#             print(true_p, float(pred_p), "err:", float(mae))
 
+            err = true_p - pred_p
+
+            true_err_list.append(err)
             err_list.append(mae)
-            good_guess = int(numpy.round(true_p)) == int(numpy.round(pred_p))
+            good_guess = int(numpy.round(true_p))==int(numpy.round(pred_p))
             hit_list.append(int(good_guess))
-        #         sqerr = numpy.power(true_p - pred_p, 2)
+    #         sqerr = numpy.power(true_p - pred_p, 2)
 
-        #         print(six, qix, ":", srow, qrow)
-        #         print("-->", pred_p, true_p, " ... ", good_guess)
+#             print(six, qix, ":", srow, qrow)
+#             print("-->", pred_p, true_p, " ... ", good_guess)
 
         print("R2 = ", r2_score(true_pz, pred_pz))
         print("MAE = ", mean_absolute_error(true_pz, pred_pz))
         numpy.set_printoptions(precision=3)
-        #     print("Mean sq err {}:".format(qrow.shape), numpy.sqrt(numpy.mean(err_list)))
+    #     print("Mean sq err {}:".format(qrow.shape), numpy.sqrt(numpy.mean(err_list)))
+    
+        plt.hist(true_pz, alpha=0.5)
+        plt.hist(pred_pz, alpha=0.5)
+        plt.show()
+        
+        plt.hist(numpy.array(true_err_list).flatten(), alpha=0.5)
+        plt.show()
+        
         mean_err_list.append(numpy.mean(err_list))
         mean_std_list.append(numpy.std(err_list))
         mean_hit_list.append(numpy.mean(hit_list))
@@ -732,102 +757,98 @@ def report(n_factors, min_active, max_active, emb_w, nn_mode, loss_mode, sws_lis
     # print(mean_std_list)
     # print(mean_hit_list)
     # print(params_list)
-    print(len(stz), "x", len(qnz))
-    #     for e,s,acc,params in zip(mean_err_list, mean_std_list, mean_hit_list, params_list):
-    #         print("acc=",acc)
-    #         print("mae=",e,"sig=",s)
-    #         print(params)
-    #     print("aggregated:")
-    print(numpy.median(mean_hit_list), numpy.std(mean_hit_list), "/", numpy.median(mean_err_list),
-          numpy.median(mean_std_list))
+    print(len(stz),"x",len(qnz))
+#     for e,s,acc,params in zip(mean_err_list, mean_std_list, mean_hit_list, params_list):
+#         print("acc=",acc)
+#         print("mae=",e,"sig=",s)
+#         print(params)
+#     print("aggregated:")
+    print(numpy.median(mean_hit_list), numpy.std(mean_hit_list), "/", numpy.median(mean_err_list), numpy.median(mean_std_list))
+    print(numpy.median(mean_err_list), numpy.mean(mean_err_list))
+# report(n_factors, min_active, max_active, emb_w, nn_mode, loss_mode, sws_list, qws_list, model_list, real_stu_list, real_que_list, test_datasets, params_list)
 
 
-# In[ ]:
+# In[10]:
 
 
-#tw should be ~U[0.5, 3.5]
+data_cache = {}
+
+
+# In[11]:
+
+
+##### tw should be ~U[0.5, 3.5]
 #sw should be ~N[0, sd] with sd ~U[1, 3.5]
 #a0 should be ~U[-0.5, 1]
 #missing proportion should be ~U[0, 0.3]
 
-from tensorflow import set_random_seed
+# from tensorflow.random import set_seed
+from sklearn.model_selection import train_test_split
 
-explore_mode = True
+explore_mode = False
 
 reportz=[]
 
 # factors_master = [(10,1,5)]
-factors_master = [(10,10,10)]
-w_list = [1,10]
+factors_master = [(100,1,5)]
+w_list = [100]
 factors_list = [ m+(w,) for m in factors_master for w in w_list ]
 
-# nn_modes = ["MXFN","COND","MLTM"]
-nn_modes = ["MLTM"]
-loss_modes = ["XENT"]
-sq_nums = [(1000, 150)]
+# nn_modes = ["MLTM","COND","MXFN"]
+nn_modes = ["DEEP"]
+loss_modes = ["MSE"]
+# sq_nums = [(int(1000*(1.4)**3), int(150*(1.4)**3))]
+# sq_nums = [(int(200*(1.41)**4), int(200*(1.41)**4))]
+sq_nums = [(10000, 1000)]
+
 # student_staminas = [0.01, 0.1, 0.5, 0.75, 1.0]
 
-def stitch_n_split(pairs, probs):
-#     _pfz = numpy.array([int((random.random() < probs[vi,mi])) for (vi,mi) in pairs])
-    _pfz = numpy.array([int(probs[vi,mi]>=0.5) for (vi,mi) in pairs])
-    _sz = [p[0] for p in pairs]
-    _qz = [p[1] for p in pairs]
-    return _pfz, _sz, _qz
+spars_list = [1] # [0.01, 0.05, 0.25, 0.5, 0.75, 1.0]
 
-n_runs = 1
+data_to_run = [0]#,5]
+bal = .5
+
 
 for (n_students, n_questions) in sq_nums:
+    print("{} students, {} questions".format(n_students, n_questions))
     for nn_mode in nn_modes:
         for loss_mode in loss_modes:
             for (n_factors, min_active, max_active, emb_w) in factors_list:
-            
-                model_list=[]
-                rasch=True
+                for spars in spars_list:
+                    
+                    tup = ((n_factors, min_active, max_active), (10000, 70))
+                    if tup in gen_m_cache:
+                        (gen_m, history, best_dims, best_mse) = gen_m_cache[tup]
+                    else:
+                        print(gen_m_cache.keys())
+                        raise Exception("Genny not found for",tup)
 
-                questions=None
+#                     set_seed(666)
+                    numpy.random.seed(666)
 
-                tup = (n_factors, min_active, max_active) 
-                if tup in gen_m_cache:
-                    gen_m = gen_m_cache[tup]
-                else:
-                    gen_m = create_offset_generator(n_factors, min_active, max_active, sampsize=14, n_iter=20000)
-                    gen_m_cache[tup] = gen_m
+                    pred_list  = []
+                    model_list = []
+                    sparss     = []
+                    sws_list   = []
+                    qws_list   = []
+                    real_stu_list = []
+                    real_que_list = []
+                    params_list   = []
+                    test_datasets = []
+                    for a in data_to_run:
 
-                qws_list = []
-                sws_list = []
-                tr_list = []
-                params_list = []
-                # questions=None
-                real_stu_list=[]
-                real_que_list=[]
-                test_datasets=[]
-#                 qn_av = None
-#                 qn_std = None
-
-                pred_list = []
-                
-                set_random_seed(666)
-                numpy.random.seed(666)
-                for a in range(n_runs):
-                    found = False
-                    while not found:
-                        tw = random.uniform(0.5, 3.5)
-                        a1 = random.uniform(1, 3.5)
-                        a0 = gen_m.predict(numpy.array([[tw,a1,0.5]]).reshape(1,-1))
+                        (tw,a0,a1, students_temp, qz_temp) = pickle.load(open("./synth_data/MLTM_10000_1000_(100_1_5)_{}.p".format(a), "rb"))
+                        print("loaded dataset",a,":", a0,a1,tw)
+                                
+                        snan = numpy.isnan(numpy.sum(students_temp))
+                        qnan = numpy.isnan(numpy.sum(qz_temp))
+                        print(snan, qnan)
+                            
+#                         students2 = students_temp.astype(int)[0:1000]
+#                         questions = qz_temp.astype(int)
                         
-                        if rasch:
-                            _, _, students_temp, qz_temp  = gen_rasch_run(n_factors, a0, a1, min_active, max_active, test_w = tw, n_students=n_students, n_questions=n_questions)
-                        else:
-                            _, _, students_temp, qz_temp  = gen_bayes_run(n_factors, a0, a1, min_active, max_active, test_w = tw, n_students=n_students, n_questions=n_questions)
-
-
-                        students2 = students_temp
-
-                    #     if questions is None:
+                        students2 = students_temp[0:2000]
                         questions = qz_temp
-
-    #                         qn_av = numpy.mean(questions, axis=0)
-    #                         qn_std = numpy.std(questions, axis=0)
 
                         if explore_mode:
                             plot_items([], questions, None)
@@ -839,135 +860,102 @@ for (n_students, n_questions) in sq_nums:
                             plt.hist(questions.flatten(), alpha=0.5, bins=bin_spread(questions))
                             plt.show()
 
-                    #     (sz2,qz2,pfz2), (vsz2,vqz2,vpfz2), (tsz2,tqz2,tpfz2), obs2, probs2 = tvt_split(students2, questions, split_mode=1)
-                    #     tr_list.append(((sz2,qz2,pfz2), (vsz2,vqz2,vpfz2), (tsz2,tqz2,tpfz2)))
+                        tr_pairs = []
+                        v_pairs = []
+                        tt_pairs = []
+                        slist = list(range(len(students2)))
+                        random.seed(666)
+                        shuffle(slist)
+                        for vi in slist:
+                            qlist= list(range(len(questions)))
+                            shuffle(qlist)
+                            first = True
+                            for mi in qlist:
+                                if first:
+                                    tt_pairs.append((vi,mi))
+                                    first = False
+                                else:
+                                    tr_pairs.append((vi,mi))
 
-                        sz=[]
-                        qz=[]
-                        pfz=[]
-                        probs=numpy.zeros((len(students2), len(questions)))
-                        obs=numpy.zeros((len(students2), len(questions)))
+                        print("splitting")
+                        realise = True
+                        if spars < 1:
+                            tr_pairs, _ = train_test_split(tr_pairs, train_size=spars)
+                        tr_pairs, v_pairs = train_test_split(tr_pairs, test_size=0.1)
+                        print("splut")
 
-                        all_pairs = []
-                        for vi in range(len(students2)):
-                            for mi in range(len(questions)):
-                                for _ in range(1):
+                        pfz, sz, qz, _ = stitch_n_split(tr_pairs, students2, questions, realise=realise, rpt=True)
+                        vpfz, vsz, vqz, _ = stitch_n_split(v_pairs, students2, questions, realise=realise, rpt=True)
 
-                                    if rasch:
-                            #                 zmask = (qws[mi]==-10).astype(int)
-                    #                     print(students2[vi])
-                    #                     print(questions[mi])
-                                        deltas = students2[vi]-questions[mi]
-                                        prs = logistic(deltas,1,0)
-                    #                     print("prs=", prs)
-                    #                     prs = numpy.maximum(zmask,prs)
-                                    else:
-                                        p = students2[vi]
-                                        q = questions[mi]
-                    #                     print("p",p)
-                    #                     print("q",q)
-                                        prs = (1-q)+(p*q)
+                        print("SS done")
 
-                                    pr = numpy.prod(prs)
-                    #                 print("prod pr=", pr)
-    #                                 sz.append(vi)
-    #                                 qz.append(mi)
-                                    all_pairs.append((vi,mi))
-    #                                 ob = (random.random() < pr)
-                                    probs[vi,mi] = pr
-                    #                 obs[vi.mi] = ob                
-    #                                 pfz.append(pr)
 
-    #                     all_pairs = list(zip(sz,qz))
-                        shuffle(all_pairs)
-
-                    #     divvy = len(all_pairs)//10
-                    #     print("divvy",divvy)
-                        divvy = min(1000, len(all_pairs)//20)
-
-                        from sklearn.model_selection import train_test_split
-    #                     dummyz = numpy.zeros(len(all_pairs))
-                        tr_pairs, tt_pairs = train_test_split(all_pairs, test_size=divvy)
-                        tr_pairs, v_pairs = train_test_split(tr_pairs, test_size=divvy)
-                        
-                        for pa in tr_pairs:
-#                             print(pa)
-                            if pa in tt_pairs:
-                                print("TR IN TT")
-                                raise Exception
-                            if pa in v_pairs:
-                                print("TR IN V")
-                                raise Exception
-
-                        pfz, sz, qz = stitch_n_split(tr_pairs, probs)
-                        vpfz, vsz, vqz = stitch_n_split(v_pairs, probs)
-                    #     vpfz, vsz, vqz = [],[],[]
-
-                        print("lens of pfz and vpfz", len(pfz), len(vpfz))
+                        print("Sparsity",spars,"lens of pfz and vpfz, tt_pairs", len(pfz), len(vpfz), len(tt_pairs))
 
                         if explore_mode:
-                            plt.hist(probs.flatten(), alpha=0.5)
-                            plt.title("probs")
-                            plt.show()
-
                             plt.hist(numpy.array(pfz).flatten(), alpha=0.5)
                             plt.title("pfz")
                             plt.show()
 
-                        print(tw, a1, a0)
-                        mn = numpy.mean(pfz)
-                        print(mn, numpy.mean(vpfz))
-                        if mn >=0.45 and mn <=0.55:
-                            print("FOUND ELIGIBLE SPREAD")
-                            found=True
-                            
-                    real_stu_list.append(students2)
-                    real_que_list.append(questions)
-                    test_datasets.append(tt_pairs)
-                    params_list.append((tw,a1,a0,numpy.mean(pfz), numpy.mean(vpfz)))
-                #     if numpy.mean(pfz) <0.4 or numpy.mean(pfz)>0.6:
-                #         continue
 
-                # for runix in range(n_runs):
-                #     (sz2,qz2,pfz2), (vsz2,vqz2,vpfz2), (tsz2,tqz2,tpfz2) = tr_list[runix]
-                    obs_are_binary = numpy.array_equal(numpy.array(pfz).flatten(), numpy.array(pfz).flatten().astype(bool))
-                    print("binary obs?", obs_are_binary)
+                        class_weights = None
+    #                     data_cache[tup] = (students_temp, qz_temp, (pfz, sz, qz),(vpfz, vsz, vqz), class_weights)
 
-                    print("callio:")
-                    print(len(qz),len(sz),len(pfz))
-                    print(len(vqz),len(vsz),len(vpfz), emb_w)
-#                     nn_mode = "MLTM"
-#                     loss_mode = "XENT"
-                    print("nn_mode", nn_mode)
-                    s_table2, qn_table2, m2, h2 = generate_and_train(qz,sz,pfz, vqz,vsz,vpfz, emb_w, n_factors, min_active, max_active, nn_mode=nn_mode, loss_mode=loss_mode)
-#                     qws2= copy.copy(qn_table2.get_weights()[0])
-#                     sws2= copy.copy(s_table2.get_weights()[0])
-                    qws2= qn_table2.get_weights()[0]
-                    sws2= s_table2.get_weights()[0]
-                    
-                    pred_probs = m2.predict([qz, sz])
-#                     print(pred_probs)
-                    pred_list.append(pred_probs)
-                    model_list.append(m2)
+
+        #                 print("mean pers is", numpy.mean(perseverance))
+        #                 perseverance_list.append(perseverance)
+                        real_stu_list.append(students2)
+                        real_que_list.append(questions)
+                        test_datasets.append(tt_pairs)
+                        agt = None
+                        params_list.append((tw,a1,a0,numpy.mean(pfz), numpy.mean(vpfz), agt))
+                    #     if numpy.mean(pfz) <0.4 or numpy.mean(pfz)>0.6:
+                    #         continue
+
+                    # for runix in range(n_runs):
+                    #     (sz2,qz2,pfz2), (vsz2,vqz2,vpfz2), (tsz2,tqz2,tpfz2) = tr_list[runix]
+                        obs_are_binary = numpy.array_equal(numpy.array(pfz).flatten(), numpy.array(pfz).flatten().astype(bool))
+                        print("binary obs?", obs_are_binary)
+
+                        print("callio:")
+                        print(len(qz),len(sz),len(pfz))
+                        print(len(vqz),len(vsz),len(vpfz), emb_w)
+            #                     nn_mode = "MLTM"
+            #                     loss_mode = "XENT"
+                        print("nn_mode", nn_mode)
+                        s_table2, qn_table2, m2, h2 = generate_and_train(n_students, n_questions, qz,sz,pfz, vqz,vsz,vpfz, emb_w, n_factors, min_active, max_active, nn_mode=nn_mode, loss_mode=loss_mode, class_weights=None)
+            #                     qws2= copy.copy(qn_table2.get_weights()[0])
+            #                     sws2= copy.copy(s_table2.get_weights()[0])
+                        qws2= qn_table2.get_weights()[0]
+                        sws2= s_table2.get_weights()[0]
+
+                        pred_probs = m2.predict([qz, sz])
+            #                     print(pred_probs)
+                        pred_list.append(pred_probs)
+                        model_list.append(m2)
 
                 #     qg = q_gates.get_weights()[0]
                 #     qg_list.append(qg)
                 #     if qn_av is None:
                 #         qn_av = numpy.mean(qws2)
 
-                    sws_list.append(sws2)
-                    qws_list.append(qws2)
-                tup = (n_factors, min_active, max_active, emb_w, nn_mode, loss_mode, sws_list, qws_list, model_list, real_stu_list, real_que_list, test_datasets, params_list)
-#                 reportz.append(zlib.compress(pickle.dumps(tup)))
-                reportz.append(tup)
-    
+                        sparss.append(spars)
+                        sws_list.append(sws2)
+                        qws_list.append(qws2)
+                        tup = (n_factors, min_active, max_active, emb_w, nn_mode, loss_mode, sws_list, qws_list, model_list, real_stu_list, real_que_list, test_datasets, params_list, sparss)
+        #                 reportz.append(zlib.compress(pickle.dumps(tup)))
+        #                 print(perseverance_list)
+
+                    reportz.append(tup)
+print("finished")
 
 
-# In[56]:
+# In[ ]:
 
 
+print(len(reportz))
 for tup in reportz:
-#     tup = pickle.loads(zlib.decompress(tup_cmp))
-    report(*tup)
+#     tup = pickle.loads(zlib.decompress(tup_cmp))/
+    report(*tup, compare = True)
     
 
